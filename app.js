@@ -27,14 +27,18 @@
   function render() { document.getElementById('startDate').value = state.startDate; renderRoster(); renderTable(); updateTotals(); check(false); save(); }
   function setCell(i, j, val) { const e = state.employees[i], arr = j < 0 ? e.prev : e.work, k = j < 0 ? j + PREV : j; arr[k] = val; if (j >= 0) { if (val === 'x') e.requested[k] = true; if (val === '') e.requested[k] = false; } if (val === 'o') { const group = i < 3 ? [0, 1, 2] : [3, 4, 5]; group.forEach(x => { if (x !== i) { const other = j < 0 ? state.employees[x].prev : state.employees[x].work; if (other[k] === 'o') other[k] = ''; } }); } render(); check(true); }
 
+  function exceedsRestLimit(run, currentDays) {
+    return run > 3 && (run > 4 || run <= currentDays);
+  }
   function firstLongRest(days) {
     let run = 0;
-    return days.findIndex(v => (run = v === 'o' ? 0 : run + 1) === 4);
+    const end = days.findIndex((v, i) => exceedsRestLimit(run = v === 'o' ? 0 : run + 1, i - PREV + 1));
+    return end < 0 ? null : { end, run };
   }
   function restWarning(e, group) {
     if (!Number(e.target)) return null;
-    const end = firstLongRest([...e.prev, ...e.work.map((v, d) => state.noAssign[group.key][d] ? '' : v)]);
-    return end < 0 ? null : `${e.name}：${dateLabel(end - PREV - 3)}〜${dateLabel(end - PREV)}に4連休以上があります。`;
+    const rest = firstLongRest([...e.prev, ...e.work.map((v, d) => state.noAssign[group.key][d] ? '' : v)]);
+    return !rest ? null : `${e.name}：${dateLabel(rest.end - PREV - rest.run + 1)}〜${dateLabel(rest.end - PREV)}に${rest.run}連休以上があります。`;
   }
   function violations() { const errors = [], warnings = state.employees.map((e, i) => restWarning(e, GROUPS[i < 3 ? 0 : 1])).filter(Boolean); for (const g of GROUPS) { for (let d = 0; d < DAYS; d++) { const os = state.employees.slice(g.start, g.start + 3).filter(e => e.work[d] === 'o').length; if (state.noAssign[g.key][d]) { if (os > 1) errors.push(`${g.label} ${d + 1}日目: 配置不要日なのに○が${os}人`); else if (os === 1) warnings.push(`${dateLabel(d)} ${g.label}グループは配置不要日に指定されていますが、○があります。`); } else if (os !== 1) errors.push(`${g.label} ${d + 1}日目: ○が${os}人`); } for (let i = g.start; i < g.start + 3; i++) { const e = state.employees[i], seq = [...e.prev, ...e.work]; for (let k = 0; k < seq.length; k++) { if (seq[k] === 'o' && seq[k - 1] === 'o' && seq[k - 2] === 'o') { errors.push(`${e.name}: 3連勤（${k < PREV + 2 ? '前回境界を含む' : '今回期間内'}）`); break; } } const actual = e.work.filter(x => x === 'o').length; if (actual !== Number(e.target || 0)) warnings.push(`${e.name}: 目標との差 ${actual - Number(e.target || 0)}`); } } return { errors, warnings }; }
   function check(show = true) { const errors = [], warnings = []; state.employees.forEach(e => e.work.forEach((v, d) => { if (e.requested[d] && v === 'o') errors.push(`${e.name}: 希望休を○に変更`); })); const v = violations(); errors.push(...v.errors); warnings.push(...v.warnings); const box = document.getElementById('messages'); if (!show && box.children.length) return; box.innerHTML = ''; if (errors.length) box.innerHTML += `<div class="message error"><strong>要確認</strong><ul>${errors.slice(0, 8).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`; if (warnings.length) box.innerHTML += `<div class="message warning"><strong>警告</strong><ul>${warnings.slice(0, 8).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`; if (show && !errors.length && !warnings.length) box.innerHTML = '<div class="message success">チェック完了: 重大な問題はありません。</div>'; }
@@ -53,7 +57,7 @@
       return rest.map((n, i) => i === worker || !Number(people[i].target) || restLimit === Infinity ? 0 : n + 1);
     }
     function dfs(d, rest) {
-      if (rest.some(n => n > restLimit)) return false;
+      if (restLimit !== Infinity && rest.some(n => exceedsRestLimit(n, d))) return false;
       if (d === DAYS) return counts.every((c, i) => c === Number(people[i].target));
       if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1)); }
       const key = `${d}|${counts.join(',')}|${chosen[d - 1] ?? -1}|${d ? chosen[d - 1] === chosen[d - 2] ? 2 : 1 : 0}|${rest.join(',')}`;
@@ -93,22 +97,23 @@
         if (!reasons.length) {
           const people = state.employees.slice(g.start, g.start + 3);
           const active = people.filter(e => Number(e.target) > 0);
-          // With no previous entries, every active employee needs to work on day one.
+          // With no previous entries, every active employee needs a shift by day two.
+          const firstDays = [0, 1].filter(d => !state.noAssign[g.key][d]);
           if (people.every(e => e.prev.every(v => v === '')) &&
-              (active.length > 1 || active.some(e => state.noAssign[g.key][0] || e.work[0] === 'x' || e.requested[0]))) {
+              (active.length > firstDays.length || active.some(e => !firstDays.some(d => e.work[d] !== 'x' && !e.requested[d])))) {
             checkPrevious = true;
           }
           const forced = people.flatMap(e => {
             if (!Number(e.target)) return [];
-            const end = firstLongRest([...e.prev, ...e.work.map((v, d) =>
+            const rest = firstLongRest([...e.prev, ...e.work.map((v, d) =>
               state.noAssign[g.key][d] || v === 'x' || e.requested[d] ? '' : 'o')]);
-            return end < 0 ? [] : [`${e.name}さんは${dateLabel(end - PREV - 3)}〜${dateLabel(end - PREV)}の4連休を避けられません。希望休または配置不要日を確認してください。`];
+            return !rest ? [] : [`${e.name}さんは${dateLabel(rest.end - PREV - rest.run + 1)}〜${dateLabel(rest.end - PREV)}の${rest.run}連休を避けられません。希望休または配置不要日を確認してください。`];
           });
           if (forced.length) reasons = forced;
           else {
             const withoutRestLimit = solveGroup(g.start, 2, Infinity);
             restoreGroup(g.start, backup);
-            if (withoutRestLimit) reasons = ['最大3連休の条件を満たせません。希望休、目標出勤日数、配置不要日を確認してください。'];
+            if (withoutRestLimit) reasons = ['連休の上限（今回期間内は3日、前回との境界をまたぐ場合は4日）を守れません。希望休、目標出勤日数、配置不要日を確認してください。'];
             else {
               const withoutWorkLimit = solveGroup(g.start, Infinity);
               restoreGroup(g.start, backup);
