@@ -48,6 +48,9 @@
     for (let d = 0; d < DAYS; d++) { if (state.noAssign[group.key][d]) continue; const fixedOn = people.map((e, i) => e.work[d] === 'o' ? i : -1).filter(x => x >= 0); if (fixedOn.length > 1 || !available.some(row => row[d])) return null; }
     for (let i = 0; i < 3; i++) { for (let d = DAYS - 1; d >= 0; d--) suffix[i][d] = suffix[i][d + 1] + (available[i][d] ? 1 : 0); if (suffix[i][0] < Number(people[i].target)) return null; }
     const chosen = Array(DAYS).fill(-1);
+    const optimize = limit === 2 && restLimit !== Infinity;
+    const pairs = [0, 0, 0];
+    let best = null, bestCost = Infinity, bestSpread = Infinity;
     const initialRest = people.map(e => {
       let rest = 0;
       for (let d = PREV - 1; d >= 0 && e.prev[d] !== 'o'; d--) rest++;
@@ -56,18 +59,47 @@
     function nextRest(rest, worker) {
       return rest.map((n, i) => i === worker || !Number(people[i].target) || restLimit === Infinity ? 0 : n + 1);
     }
-    function dfs(d, rest) {
+    function dfs(d, rest, cost = 0) {
+      if (cost > bestCost) return false;
       if (restLimit !== Infinity && rest.some(n => exceedsRestLimit(n, d))) return false;
-      if (d === DAYS) return counts.every((c, i) => c === Number(people[i].target));
-      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1)); }
+      if (d === DAYS) {
+        if (!counts.every((c, i) => c === Number(people[i].target))) return false;
+        if (!optimize) return true;
+        // At equal total, minimizing the sum of squares minimizes variance.
+        const spread = pairs.reduce((sum, n) => sum + n * n, 0);
+        if (cost < bestCost || (cost === bestCost && spread < bestSpread)) {
+          best = chosen.slice(); bestCost = cost; bestSpread = spread;
+        }
+        return false;
+      }
+      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1), cost); }
       const key = `${d}|${counts.join(',')}|${chosen[d - 1] ?? -1}|${d ? chosen[d - 1] === chosen[d - 2] ? 2 : 1 : 0}|${rest.join(',')}`;
-      if (memo.has(key)) return memo.get(key);
-      for (let i = 0; i < 3; i++) if (Number(people[i].target) - counts[i] > suffix[i][d]) { memo.set(key, false); return false; }
+      if (optimize) {
+        const prior = memo.get(key), distribution = pairs.join(',');
+        // The same suffix is available from either prefix. Lower total
+        // dominates; at equal total, retain distinct fairness distributions.
+        if (prior && (prior.cost < cost || (prior.cost === cost && prior.distributions.has(distribution)))) return false;
+        if (!prior || cost < prior.cost) memo.set(key, { cost, distributions: new Set([distribution]) });
+        else prior.distributions.add(distribution);
+      } else if (memo.has(key)) return false;
+      for (let i = 0; i < 3; i++) if (Number(people[i].target) - counts[i] > suffix[i][d]) { if (!optimize) memo.set(key, false); return false; }
       const fixedOn = people.map((e, i) => e.work[d] === 'o' ? i : -1).filter(i => i >= 0), opts = fixedOn.length ? fixedOn : people.map((e, i) => (e.work[d] === 'x' || e.requested[d]) ? -1 : i).filter(i => i >= 0).sort((a, b) => (Number(people[b].target) - counts[b]) - (Number(people[a].target) - counts[a]));
-      for (const i of opts) { if (!canWork(people[i], d, limit) || counts[i] >= Number(people[i].target)) continue; chosen[d] = i; people.forEach((e, k) => { if (e.work[d] === '') e.work[d] = k === i ? 'o' : ''; }); counts[i]++; if (dfs(d + 1, nextRest(rest, i))) return true; counts[i]--; people.forEach((e, k) => { if (e.work[d] === 'o' && !fixed[k][d]) e.work[d] = ''; }); chosen[d] = -1; }
-      memo.set(key, false); return false;
+      for (const i of opts) {
+        if (!canWork(people[i], d, limit) || counts[i] >= Number(people[i].target)) continue;
+        const pair = Number(optimize && (d === 0 ? people[i].prev[PREV - 1] === 'o' : chosen[d - 1] === i));
+        chosen[d] = i; people.forEach((e, k) => { if (e.work[d] === '') e.work[d] = k === i ? 'o' : ''; });
+        counts[i]++; pairs[i] += pair;
+        if (dfs(d + 1, nextRest(rest, i), cost + pair)) return true;
+        counts[i]--; pairs[i] -= pair;
+        people.forEach((e, k) => { if (e.work[d] === 'o' && !fixed[k][d]) e.work[d] = ''; }); chosen[d] = -1;
+      }
+      if (!optimize) memo.set(key, false);
+      return false;
     }
-    return dfs(0, initialRest) ? true : null;
+    if (dfs(0, initialRest)) return true;
+    if (!best) return null;
+    best.forEach((worker, d) => { if (worker >= 0) people[worker].work[d] = 'o'; });
+    return true;
   }
   function restoreGroup(start, backup) { const old = JSON.parse(backup); state.employees.forEach((e, i) => { if (i >= start && i < start + 3) e.work = old[i]; }); }
   function failureReasons(start) {
