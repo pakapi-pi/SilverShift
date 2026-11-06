@@ -27,25 +27,43 @@
   function render() { document.getElementById('startDate').value = state.startDate; renderRoster(); renderTable(); updateTotals(); check(false); save(); }
   function setCell(i, j, val) { const e = state.employees[i], arr = j < 0 ? e.prev : e.work, k = j < 0 ? j + PREV : j; arr[k] = val; if (j >= 0) { if (val === 'x') e.requested[k] = true; if (val === '') e.requested[k] = false; } if (val === 'o') { const group = i < 3 ? [0, 1, 2] : [3, 4, 5]; group.forEach(x => { if (x !== i) { const other = j < 0 ? state.employees[x].prev : state.employees[x].work; if (other[k] === 'o') other[k] = ''; } }); } render(); check(true); }
 
-  function violations() { const errors = [], warnings = []; for (const g of GROUPS) { for (let d = 0; d < DAYS; d++) { const os = state.employees.slice(g.start, g.start + 3).filter(e => e.work[d] === 'o').length; if (state.noAssign[g.key][d]) { if (os > 1) errors.push(`${g.label} ${d + 1}日目: 配置不要日なのに○が${os}人`); else if (os === 1) warnings.push(`${dateLabel(d)} ${g.label}グループは配置不要日に指定されていますが、○があります。`); } else if (os !== 1) errors.push(`${g.label} ${d + 1}日目: ○が${os}人`); } for (let i = g.start; i < g.start + 3; i++) { const e = state.employees[i], seq = [...e.prev, ...e.work]; for (let k = 0; k < seq.length; k++) { if (seq[k] === 'o' && seq[k - 1] === 'o' && seq[k - 2] === 'o') { errors.push(`${e.name}: 3連勤（${k < PREV + 2 ? '前回境界を含む' : '今回期間内'}）`); break; } } const actual = e.work.filter(x => x === 'o').length; if (actual !== Number(e.target || 0)) warnings.push(`${e.name}: 目標との差 ${actual - Number(e.target || 0)}`); } } return { errors, warnings }; }
+  function firstLongRest(days) {
+    let run = 0;
+    return days.findIndex(v => (run = v === 'o' ? 0 : run + 1) === 4);
+  }
+  function restWarning(e, group) {
+    if (!Number(e.target)) return null;
+    const end = firstLongRest([...e.prev, ...e.work.map((v, d) => state.noAssign[group.key][d] ? '' : v)]);
+    return end < 0 ? null : `${e.name}：${dateLabel(end - PREV - 3)}〜${dateLabel(end - PREV)}に4連休以上があります。`;
+  }
+  function violations() { const errors = [], warnings = state.employees.map((e, i) => restWarning(e, GROUPS[i < 3 ? 0 : 1])).filter(Boolean); for (const g of GROUPS) { for (let d = 0; d < DAYS; d++) { const os = state.employees.slice(g.start, g.start + 3).filter(e => e.work[d] === 'o').length; if (state.noAssign[g.key][d]) { if (os > 1) errors.push(`${g.label} ${d + 1}日目: 配置不要日なのに○が${os}人`); else if (os === 1) warnings.push(`${dateLabel(d)} ${g.label}グループは配置不要日に指定されていますが、○があります。`); } else if (os !== 1) errors.push(`${g.label} ${d + 1}日目: ○が${os}人`); } for (let i = g.start; i < g.start + 3; i++) { const e = state.employees[i], seq = [...e.prev, ...e.work]; for (let k = 0; k < seq.length; k++) { if (seq[k] === 'o' && seq[k - 1] === 'o' && seq[k - 2] === 'o') { errors.push(`${e.name}: 3連勤（${k < PREV + 2 ? '前回境界を含む' : '今回期間内'}）`); break; } } const actual = e.work.filter(x => x === 'o').length; if (actual !== Number(e.target || 0)) warnings.push(`${e.name}: 目標との差 ${actual - Number(e.target || 0)}`); } } return { errors, warnings }; }
   function check(show = true) { const errors = [], warnings = []; state.employees.forEach(e => e.work.forEach((v, d) => { if (e.requested[d] && v === 'o') errors.push(`${e.name}: 希望休を○に変更`); })); const v = violations(); errors.push(...v.errors); warnings.push(...v.warnings); const box = document.getElementById('messages'); if (!show && box.children.length) return; box.innerHTML = ''; if (errors.length) box.innerHTML += `<div class="message error"><strong>要確認</strong><ul>${errors.slice(0, 8).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`; if (warnings.length) box.innerHTML += `<div class="message warning"><strong>警告</strong><ul>${warnings.slice(0, 8).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`; if (show && !errors.length && !warnings.length) box.innerHTML = '<div class="message success">チェック完了: 重大な問題はありません。</div>'; }
   function canWork(e, day, limit) { const seq = [...e.prev, ...e.work]; let run = 0; for (let k = day + PREV - 1; k >= 0 && seq[k] === 'o'; k--) run++; return run < limit; }
-  function solveGroup(start, limit) {
+  function solveGroup(start, limit, restLimit = 3) {
     const group = GROUPS.find(g => g.start === start), people = state.employees.slice(start, start + 3), fixed = people.map(e => e.work.map(v => v === 'o')), counts = [0, 0, 0], available = people.map(e => e.work.map((v, d) => !state.noAssign[group.key][d] && v !== 'x' && !e.requested[d])), suffix = people.map(() => Array(DAYS + 1).fill(0)), memo = new Map();
     for (let d = 0; d < DAYS; d++) { if (state.noAssign[group.key][d]) continue; const fixedOn = people.map((e, i) => e.work[d] === 'o' ? i : -1).filter(x => x >= 0); if (fixedOn.length > 1 || !available.some(row => row[d])) return null; }
     for (let i = 0; i < 3; i++) { for (let d = DAYS - 1; d >= 0; d--) suffix[i][d] = suffix[i][d + 1] + (available[i][d] ? 1 : 0); if (suffix[i][0] < Number(people[i].target)) return null; }
     const chosen = Array(DAYS).fill(-1);
-    function dfs(d) {
+    const initialRest = people.map(e => {
+      let rest = 0;
+      for (let d = PREV - 1; d >= 0 && e.prev[d] !== 'o'; d--) rest++;
+      return Number(e.target) ? rest : 0;
+    });
+    function nextRest(rest, worker) {
+      return rest.map((n, i) => i === worker || !Number(people[i].target) || restLimit === Infinity ? 0 : n + 1);
+    }
+    function dfs(d, rest) {
+      if (rest.some(n => n > restLimit)) return false;
       if (d === DAYS) return counts.every((c, i) => c === Number(people[i].target));
-      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1); }
-      const key = `${d}|${counts.join(',')}|${chosen[d - 1] ?? -1}|${d ? chosen[d - 1] === chosen[d - 2] ? 2 : 1 : 0}`;
+      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1)); }
+      const key = `${d}|${counts.join(',')}|${chosen[d - 1] ?? -1}|${d ? chosen[d - 1] === chosen[d - 2] ? 2 : 1 : 0}|${rest.join(',')}`;
       if (memo.has(key)) return memo.get(key);
       for (let i = 0; i < 3; i++) if (Number(people[i].target) - counts[i] > suffix[i][d]) { memo.set(key, false); return false; }
       const fixedOn = people.map((e, i) => e.work[d] === 'o' ? i : -1).filter(i => i >= 0), opts = fixedOn.length ? fixedOn : people.map((e, i) => (e.work[d] === 'x' || e.requested[d]) ? -1 : i).filter(i => i >= 0).sort((a, b) => (Number(people[b].target) - counts[b]) - (Number(people[a].target) - counts[a]));
-      for (const i of opts) { if (!canWork(people[i], d, limit) || counts[i] >= Number(people[i].target)) continue; chosen[d] = i; people.forEach((e, k) => { if (e.work[d] === '') e.work[d] = k === i ? 'o' : ''; }); counts[i]++; if (dfs(d + 1)) return true; counts[i]--; people.forEach((e, k) => { if (e.work[d] === 'o' && !fixed[k][d]) e.work[d] = ''; }); chosen[d] = -1; }
+      for (const i of opts) { if (!canWork(people[i], d, limit) || counts[i] >= Number(people[i].target)) continue; chosen[d] = i; people.forEach((e, k) => { if (e.work[d] === '') e.work[d] = k === i ? 'o' : ''; }); counts[i]++; if (dfs(d + 1, nextRest(rest, i))) return true; counts[i]--; people.forEach((e, k) => { if (e.work[d] === 'o' && !fixed[k][d]) e.work[d] = ''; }); chosen[d] = -1; }
       memo.set(key, false); return false;
     }
-    return dfs(0) ? true : null;
+    return dfs(0, initialRest) ? true : null;
   }
   function restoreGroup(start, backup) { const old = JSON.parse(backup); state.employees.forEach((e, i) => { if (i >= start && i < start + 3) e.work = old[i]; }); }
   function failureReasons(start) {
@@ -62,10 +80,47 @@
     state.employees.forEach(e => { e.work = e.work.map((v, d) => (v === 'x' || e.requested[d]) ? 'x' : ''); });
     const base = JSON.stringify(state.employees.map(e => e.work));
     const failed = [];
+    let checkPrevious = false;
     for (const g of GROUPS) {
       const backup = JSON.stringify(state.employees.map(e => e.work)); let ok = solveGroup(g.start, 1);
-      if (!ok) { restoreGroup(g.start, backup); ok = solveGroup(g.start, 2); if (!ok) { restoreGroup(g.start, backup); let reasons = failureReasons(g.start); if (!reasons.length) { const probe = solveGroup(g.start, 99); restoreGroup(g.start, backup); if (probe) reasons = ['前回シフトとのつながりを含めると、3連勤を避けて作成できません。']; } if (!reasons.length) reasons = [`${g.label}グループは現在の条件では作成できません。希望休、目標日数、配置不要日を見直してください。`]; failed.push(...reasons.map(x => `${g.label}グループ: ${x}`)); } }
+      if (!ok) {
+        restoreGroup(g.start, backup);
+        ok = solveGroup(g.start, 2);
+      }
+      if (!ok) {
+        restoreGroup(g.start, backup);
+        let reasons = failureReasons(g.start);
+        if (!reasons.length) {
+          const people = state.employees.slice(g.start, g.start + 3);
+          const active = people.filter(e => Number(e.target) > 0);
+          // With no previous entries, every active employee needs to work on day one.
+          if (people.every(e => e.prev.every(v => v === '')) &&
+              (active.length > 1 || active.some(e => state.noAssign[g.key][0] || e.work[0] === 'x' || e.requested[0]))) {
+            checkPrevious = true;
+          }
+          const forced = people.flatMap(e => {
+            if (!Number(e.target)) return [];
+            const end = firstLongRest([...e.prev, ...e.work.map((v, d) =>
+              state.noAssign[g.key][d] || v === 'x' || e.requested[d] ? '' : 'o')]);
+            return end < 0 ? [] : [`${e.name}さんは${dateLabel(end - PREV - 3)}〜${dateLabel(end - PREV)}の4連休を避けられません。希望休または配置不要日を確認してください。`];
+          });
+          if (forced.length) reasons = forced;
+          else {
+            const withoutRestLimit = solveGroup(g.start, 2, Infinity);
+            restoreGroup(g.start, backup);
+            if (withoutRestLimit) reasons = ['最大3連休の条件を満たせません。希望休、目標出勤日数、配置不要日を確認してください。'];
+            else {
+              const withoutWorkLimit = solveGroup(g.start, Infinity);
+              restoreGroup(g.start, backup);
+              if (withoutWorkLimit) reasons = ['前回シフトとのつながりを含めると、3連勤を避けて作成できません。'];
+            }
+          }
+        }
+        if (!reasons.length) reasons = ['希望休、目標日数、配置不要日、連勤・連休の条件を同時に満たせません。'];
+        failed.push(...reasons.map(x => `${g.label}グループ: ${x}`));
+      }
     }
+    if (checkPrevious) failed.push('前回3日分の勤務を確認してください。空白は休みとして判定されるため、連休条件を満たせない可能性があります。');
     if (failed.length) state.employees.forEach((e, i) => { e.work = JSON.parse(base)[i]; });
     state.lastResult = failed.length ? '作成失敗' : '作成成功'; render(); if (failed.length) showMessage('error', ['この条件では作成できません。', ...failed, '不正なシフトは作成していません。']); else showMessage('success', ['自動作成しました。必要に応じて手修正してください。']);
   }
