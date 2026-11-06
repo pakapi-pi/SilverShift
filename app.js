@@ -43,14 +43,14 @@
   function violations() { const errors = [], warnings = state.employees.map((e, i) => restWarning(e, GROUPS[i < 3 ? 0 : 1])).filter(Boolean); for (const g of GROUPS) { for (let d = 0; d < DAYS; d++) { const os = state.employees.slice(g.start, g.start + 3).filter(e => e.work[d] === 'o').length; if (state.noAssign[g.key][d]) { if (os > 1) errors.push(`${g.label} ${d + 1}日目: 配置不要日なのに○が${os}人`); else if (os === 1) warnings.push(`${dateLabel(d)} ${g.label}グループは配置不要日に指定されていますが、○があります。`); } else if (os !== 1) errors.push(`${g.label} ${d + 1}日目: ○が${os}人`); } for (let i = g.start; i < g.start + 3; i++) { const e = state.employees[i], seq = [...e.prev, ...e.work]; for (let k = 0; k < seq.length; k++) { if (seq[k] === 'o' && seq[k - 1] === 'o' && seq[k - 2] === 'o') { errors.push(`${e.name}: 3連勤（${k < PREV + 2 ? '前回境界を含む' : '今回期間内'}）`); break; } } const actual = e.work.filter(x => x === 'o').length; if (actual !== Number(e.target || 0)) warnings.push(`${e.name}: 目標との差 ${actual - Number(e.target || 0)}`); } } return { errors, warnings }; }
   function check(show = true) { const errors = [], warnings = []; state.employees.forEach(e => e.work.forEach((v, d) => { if (e.requested[d] && v === 'o') errors.push(`${e.name}: 希望休を○に変更`); })); const v = violations(); errors.push(...v.errors); warnings.push(...v.warnings); const box = document.getElementById('messages'); if (!show && box.children.length) return; box.innerHTML = ''; if (errors.length) box.innerHTML += `<div class="message error"><strong>要確認</strong><ul>${errors.slice(0, 8).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`; if (warnings.length) box.innerHTML += `<div class="message warning"><strong>警告</strong><ul>${warnings.slice(0, 8).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`; if (show && !errors.length && !warnings.length) box.innerHTML = '<div class="message success">チェック完了: 重大な問題はありません。</div>'; }
   function canWork(e, day, limit) { const seq = [...e.prev, ...e.work]; let run = 0; for (let k = day + PREV - 1; k >= 0 && seq[k] === 'o'; k--) run++; return run < limit; }
-  function solveGroup(start, limit, restLimit = 3) {
+  function solveGroup(start, limit, restLimit = 3, avoid = null) {
     const group = GROUPS.find(g => g.start === start), people = state.employees.slice(start, start + 3), fixed = people.map(e => e.work.map(v => v === 'o')), counts = [0, 0, 0], available = people.map(e => e.work.map((v, d) => !state.noAssign[group.key][d] && v !== 'x' && !e.requested[d])), suffix = people.map(() => Array(DAYS + 1).fill(0)), memo = new Map();
     for (let d = 0; d < DAYS; d++) { if (state.noAssign[group.key][d]) continue; const fixedOn = people.map((e, i) => e.work[d] === 'o' ? i : -1).filter(x => x >= 0); if (fixedOn.length > 1 || !available.some(row => row[d])) return null; }
     for (let i = 0; i < 3; i++) { for (let d = DAYS - 1; d >= 0; d--) suffix[i][d] = suffix[i][d + 1] + (available[i][d] ? 1 : 0); if (suffix[i][0] < Number(people[i].target)) return null; }
     const chosen = Array(DAYS).fill(-1);
     const optimize = limit === 2 && restLimit !== Infinity;
     const pairs = [0, 0, 0];
-    let best = null, bestCost = Infinity, bestSpread = Infinity;
+    let best = null, bestCost = Infinity, bestSpread = Infinity, bestDifferent = false;
     const initialRest = people.map(e => {
       let rest = 0;
       for (let d = PREV - 1; d >= 0 && e.prev[d] !== 'o'; d--) rest++;
@@ -59,21 +59,22 @@
     function nextRest(rest, worker) {
       return rest.map((n, i) => i === worker || !Number(people[i].target) || restLimit === Infinity ? 0 : n + 1);
     }
-    function dfs(d, rest, cost = 0) {
+    function dfs(d, rest, cost = 0, different = false) {
       if (cost > bestCost) return false;
       if (restLimit !== Infinity && rest.some(n => exceedsRestLimit(n, d))) return false;
       if (d === DAYS) {
         if (!counts.every((c, i) => c === Number(people[i].target))) return false;
-        if (!optimize) return true;
+        if (!optimize && (!avoid || different)) return true;
         // At equal total, minimizing the sum of squares minimizes variance.
         const spread = pairs.reduce((sum, n) => sum + n * n, 0);
-        if (cost < bestCost || (cost === bestCost && spread < bestSpread)) {
-          best = chosen.slice(); bestCost = cost; bestSpread = spread;
+        if (cost < bestCost || (cost === bestCost && (spread < bestSpread ||
+            (spread === bestSpread && different && !bestDifferent)))) {
+          best = chosen.slice(); bestCost = cost; bestSpread = spread; bestDifferent = different;
         }
         return false;
       }
-      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1), cost); }
-      const key = `${d}|${counts.join(',')}|${chosen[d - 1] ?? -1}|${d ? chosen[d - 1] === chosen[d - 2] ? 2 : 1 : 0}|${rest.join(',')}`;
+      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1), cost, different || Boolean(avoid && avoid[d] !== 0)); }
+      const key = `${d}|${counts.join(',')}|${chosen[d - 1] ?? -1}|${d ? chosen[d - 1] === chosen[d - 2] ? 2 : 1 : 0}|${rest.join(',')}|${Number(different)}`;
       if (optimize) {
         const prior = memo.get(key), distribution = pairs.join(',');
         // The same suffix is available from either prefix. Lower total
@@ -89,7 +90,7 @@
         const pair = Number(optimize && (d === 0 ? people[i].prev[PREV - 1] === 'o' : chosen[d - 1] === i));
         chosen[d] = i; people.forEach((e, k) => { if (e.work[d] === '') e.work[d] = k === i ? 'o' : ''; });
         counts[i]++; pairs[i] += pair;
-        if (dfs(d + 1, nextRest(rest, i), cost + pair)) return true;
+        if (dfs(d + 1, nextRest(rest, i), cost + pair, different || Boolean(avoid && avoid[d] !== (1 << i)))) return true;
         counts[i]--; pairs[i] -= pair;
         people.forEach((e, k) => { if (e.work[d] === 'o' && !fixed[k][d]) e.work[d] = ''; }); chosen[d] = -1;
       }
@@ -109,6 +110,36 @@
     return reasons;
   }
   function showMessage(type, items) { const box = document.getElementById('messages'); box.innerHTML = `<div class="message ${type}">${items.length === 1 ? esc(items[0]) : `<strong>${type === 'error' ? '作成できません' : '確認してください'}</strong><ul>${items.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`}</div>`; }
+  let manuallyEdited = false;
+  function shuffle() {
+    if (state.lastResult !== '作成成功') { showMessage('warning', ['先にシフトを自動作成してください。']); return; }
+    const current = state.employees.map(e => e.work);
+    const pattern = (work, start) => Array.from({ length: DAYS }, (_, d) =>
+      work.slice(start, start + 3).reduce((mask, row, i) => mask | (row[d] === 'o' ? 1 << i : 0), 0)).join(',');
+    const patterns = work => GROUPS.map(g => pattern(work, g.start)).join('|');
+    const restore = () => state.employees.forEach((e, i) => { e.work = current[i]; });
+    const generate = avoid => {
+      state.employees.forEach((e, i) => { e.work = current[i].map((v, d) => v === 'x' || e.requested[d] ? 'x' : ''); });
+      return GROUPS.every(g => {
+        const masks = pattern(avoid, g.start).split(',').map(Number);
+        return solveGroup(g.start, 1, 3, masks) || solveGroup(g.start, 2, 3, masks);
+      });
+    };
+    if (!generate(current)) {
+      restore(); showMessage('error', ['この条件では作成できません。現在のシフトを維持しました。']); return;
+    }
+    const candidate = state.employees.map(e => e.work);
+    // The current placement may have been edited. Prove that another optimum exists.
+    if (patterns(candidate) === patterns(current) || !generate(candidate) ||
+        patterns(state.employees.map(e => e.work)) === patterns(candidate)) {
+      restore(); showMessage('warning', ['ほかの配置パターンはありません']); return;
+    }
+    restore();
+    if (manuallyEdited && !confirm('手修正した勤務配置を置き換えますか？')) return;
+    state.employees.forEach((e, i) => { e.work = candidate[i]; });
+    manuallyEdited = false;
+    render(); showMessage('success', ['別の配置パターンに切り替えました。']);
+  }
   function autoCreate() {
     const mismatches = [];
     for (const g of GROUPS) { const total = state.employees.slice(g.start, g.start + 3).reduce((a, e) => a + Number(e.target || 0), 0), required = requiredDays(g.key); if (total !== required) mismatches.push(`${g.label}グループの目標合計は${total}日ですが、必要勤務日数は${required}日です。`); }
@@ -157,6 +188,7 @@
         failed.push(...reasons.map(x => `${g.label}グループ: ${x}`));
       }
     }
+    manuallyEdited = false;
     if (checkPrevious) failed.push('前回3日分の勤務を確認してください。空白は休みとして判定されるため、連休条件を満たせない可能性があります。');
     if (failed.length) state.employees.forEach((e, i) => { e.work = JSON.parse(base)[i]; });
     state.lastResult = failed.length ? '作成失敗' : '作成成功'; render(); if (failed.length) showMessage('error', ['この条件では作成できません。', ...failed, '不正なシフトは作成していません。']); else showMessage('success', ['自動作成しました。必要に応じて手修正してください。']);
@@ -170,6 +202,6 @@
   }
   document.addEventListener('input', e => { const f = e.target.dataset.field; if (!f) return; const i = Number(e.target.dataset.i); state.employees[i][f] = f === 'target' ? Math.max(0, Math.min(28, Number(e.target.value) || 0)) : e.target.value; renderTable(); updateTotals(); save(); check(true); });
   document.addEventListener('change', e => { if (e.target.id === 'startDate') { state.startDate = e.target.value; render(); return; } const key = e.target.dataset.noassignGroup; if (key) { state.noAssign[key][Number(e.target.dataset.day)] = Boolean(e.target.checked); render(); check(true); } });
-  document.addEventListener('click', e => { const c = e.target.closest('td.cell'); if (c) { const i = Number(c.dataset.i), j = Number(c.dataset.j), v = c.dataset.value; setCell(i, j, j < 0 ? (v ? '' : 'o') : (v === '' ? 'o' : v === 'o' ? 'x' : '')); } if (e.target.id === 'autoCreate') autoCreate(); if (e.target.id === 'exportCsv') csv(); if (e.target.id === 'clearAll' && confirm('職員設定とシフトをすべて削除しますか？')) { localStorage.removeItem(KEY); state = defaultState(); render(); } });
+  document.addEventListener('click', e => { const c = e.target.closest('td.cell'); if (c) { const i = Number(c.dataset.i), j = Number(c.dataset.j), v = c.dataset.value; if (j >= 0 && v !== 'x') manuallyEdited = true; setCell(i, j, j < 0 ? (v ? '' : 'o') : (v === '' ? 'o' : v === 'o' ? 'x' : '')); } if (e.target.id === 'autoCreate') autoCreate(); if (e.target.id === 'shuffle') shuffle(); if (e.target.id === 'exportCsv') csv(); if (e.target.id === 'clearAll' && confirm('職員設定とシフトをすべて削除しますか？')) { localStorage.removeItem(KEY); state = defaultState(); manuallyEdited = false; render(); } });
   render();
 })();
