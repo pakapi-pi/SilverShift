@@ -9,7 +9,7 @@
 <body>
   <main class="app-shell">
     <header class="app-header">
-      <div><p class="eyebrow">SILVER SHIFT</p><h1>シルバー職員用 4週間シフト</h1></div>
+      <div><h1>SilverShift</h1><p class="eyebrow">シルバー職員用・4週間シフト</p></div>
       <div class="header-actions"><button id="autoCreate" class="primary">自動作成</button><button id="shuffle">シャッフル</button><button id="exportCsv">CSV出力</button><button id="clearAll" class="danger">初期化</button></div>
     </header>
 
@@ -25,11 +25,14 @@
 
     <section class="panel schedule-panel">
       <div class="section-title"><h2>シフト表</h2><span>前回: 空白 / ○　今回: 空白 → ○ → ×</span></div>
-      <div id="messages" class="messages" aria-live="polite"></div>
       <div class="table-wrap"><table id="schedule"><thead></thead><tbody></tbody></table></div>
       <div class="legend"><span><i class="dot work"></i>出勤 ○</span><span><i class="dot off"></i>希望休 ×</span><span>セルをクリックして変更</span></div>
     </section>
 
+    <section class="panel result-panel" aria-labelledby="resultTitle">
+      <h2 id="resultTitle">作成結果・確認事項</h2>
+      <div id="messages" class="messages" aria-live="polite"></div>
+    </section>
     <footer><span>データはこのブラウザのlocalStorageにのみ保存されます。</span><span id="saveStatus"></span></footer>
   </main>
   <script src="app.js"></script>
