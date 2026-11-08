@@ -27,8 +27,8 @@
   function render() { document.getElementById('startDate').value = state.startDate; renderRoster(); renderTable(); updateTotals(); check(false); save(); }
   function setCell(i, j, val) { const e = state.employees[i], arr = j < 0 ? e.prev : e.work, k = j < 0 ? j + PREV : j; arr[k] = val; if (j >= 0) { if (val === 'x') e.requested[k] = true; if (val === '') e.requested[k] = false; } if (val === 'o') { const group = i < 3 ? [0, 1, 2] : [3, 4, 5]; group.forEach(x => { if (x !== i) { const other = j < 0 ? state.employees[x].prev : state.employees[x].work; if (other[k] === 'o') other[k] = ''; } }); } render(); check(true); }
 
-  function exceedsRestLimit(run, currentDays) {
-    return run > 3 && (run > 4 || run <= currentDays);
+  function exceedsRestLimit(run) {
+    return run > 4;
   }
   function firstLongRest(days) {
     let run = 0;
@@ -48,9 +48,9 @@
     for (let d = 0; d < DAYS; d++) { if (state.noAssign[group.key][d]) continue; const fixedOn = people.map((e, i) => e.work[d] === 'o' ? i : -1).filter(x => x >= 0); if (fixedOn.length > 1 || !available.some(row => row[d])) return null; }
     for (let i = 0; i < 3; i++) { for (let d = DAYS - 1; d >= 0; d--) suffix[i][d] = suffix[i][d + 1] + (available[i][d] ? 1 : 0); if (suffix[i][0] < Number(people[i].target)) return null; }
     const chosen = Array(DAYS).fill(-1);
-    const optimize = limit === 2 && restLimit !== Infinity;
+    const optimize = Number.isFinite(limit) && restLimit !== Infinity;
     const pairs = [0, 0, 0];
-    let best = null, bestCost = Infinity, bestSpread = Infinity, bestDifferent = false;
+    let best = null, bestCost = Infinity, bestFour = Infinity, bestSpread = Infinity, bestDifferent = false;
     const initialRest = people.map(e => {
       let rest = 0;
       for (let d = PREV - 1; d >= 0 && e.prev[d] !== 'o'; d--) rest++;
@@ -59,28 +59,31 @@
     function nextRest(rest, worker) {
       return rest.map((n, i) => i === worker || !Number(people[i].target) || restLimit === Infinity ? 0 : n + 1);
     }
-    function dfs(d, rest, cost = 0, different = false) {
-      if (cost > bestCost) return false;
+    function dfs(d, rest, cost = 0, different = false, four = 0) {
+      // A run reaches four once; include runs crossing the previous-period boundary.
+      if (d > 0) four += rest.filter(n => n === 4).length;
+      if (cost > bestCost || (cost === bestCost && four > bestFour)) return false;
       if (restLimit !== Infinity && rest.some(n => exceedsRestLimit(n, d))) return false;
       if (d === DAYS) {
         if (!counts.every((c, i) => c === Number(people[i].target))) return false;
         if (!optimize && (!avoid || different)) return true;
         // At equal total, minimizing the sum of squares minimizes variance.
         const spread = pairs.reduce((sum, n) => sum + n * n, 0);
-        if (cost < bestCost || (cost === bestCost && (spread < bestSpread ||
-            (spread === bestSpread && different && !bestDifferent)))) {
-          best = chosen.slice(); bestCost = cost; bestSpread = spread; bestDifferent = different;
+        if (cost < bestCost || (cost === bestCost && (four < bestFour ||
+            (four === bestFour && (spread < bestSpread ||
+            (spread === bestSpread && different && !bestDifferent)))))) {
+          best = chosen.slice(); bestCost = cost; bestFour = four; bestSpread = spread; bestDifferent = different;
         }
         return false;
       }
-      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1), cost, different || Boolean(avoid && avoid[d] !== 0)); }
+      if (state.noAssign[group.key][d]) { chosen[d] = -1; return dfs(d + 1, nextRest(rest, -1), cost, different || Boolean(avoid && avoid[d] !== 0), four); }
       const key = `${d}|${counts.join(',')}|${chosen[d - 1] ?? -1}|${d ? chosen[d - 1] === chosen[d - 2] ? 2 : 1 : 0}|${rest.join(',')}|${Number(different)}`;
       if (optimize) {
         const prior = memo.get(key), distribution = pairs.join(',');
-        // The same suffix is available from either prefix. Lower total
-        // dominates; at equal total, retain distinct fairness distributions.
-        if (prior && (prior.cost < cost || (prior.cost === cost && prior.distributions.has(distribution)))) return false;
-        if (!prior || cost < prior.cost) memo.set(key, { cost, distributions: new Set([distribution]) });
+        // Compare both additive costs before retaining distinct fairness distributions.
+        if (prior && (prior.cost < cost || (prior.cost === cost &&
+            (prior.four < four || (prior.four === four && prior.distributions.has(distribution)))))) return false;
+        if (!prior || cost < prior.cost || (cost === prior.cost && four < prior.four)) memo.set(key, { cost, four, distributions: new Set([distribution]) });
         else prior.distributions.add(distribution);
       } else if (memo.has(key)) return false;
       for (let i = 0; i < 3; i++) if (Number(people[i].target) - counts[i] > suffix[i][d]) { if (!optimize) memo.set(key, false); return false; }
@@ -90,7 +93,7 @@
         const pair = Number(optimize && (d === 0 ? people[i].prev[PREV - 1] === 'o' : chosen[d - 1] === i));
         chosen[d] = i; people.forEach((e, k) => { if (e.work[d] === '') e.work[d] = k === i ? 'o' : ''; });
         counts[i]++; pairs[i] += pair;
-        if (dfs(d + 1, nextRest(rest, i), cost + pair, different || Boolean(avoid && avoid[d] !== (1 << i)))) return true;
+        if (dfs(d + 1, nextRest(rest, i), cost + pair, different || Boolean(avoid && avoid[d] !== (1 << i)), four)) return true;
         counts[i]--; pairs[i] -= pair;
         people.forEach((e, k) => { if (e.work[d] === 'o' && !fixed[k][d]) e.work[d] = ''; }); chosen[d] = -1;
       }
@@ -176,7 +179,7 @@
           else {
             const withoutRestLimit = solveGroup(g.start, 2, Infinity);
             restoreGroup(g.start, backup);
-            if (withoutRestLimit) reasons = ['連休の上限（今回期間内は3日、前回との境界をまたぐ場合は4日）を守れません。希望休、目標出勤日数、配置不要日を確認してください。'];
+            if (withoutRestLimit) reasons = ['連休の上限4日を守れません。希望休、目標出勤日数、配置不要日を確認してください。'];
             else {
               const withoutWorkLimit = solveGroup(g.start, Infinity);
               restoreGroup(g.start, backup);
